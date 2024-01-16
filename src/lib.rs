@@ -1,16 +1,16 @@
 // Number of bits per element
-const K_BITS: usize = 8;
+pub const K_BITS: usize = 8;
 // Finite field order: Number of elements in the field
-const K_ORDER: usize = u8::MAX as usize + 1;
+pub const K_ORDER: usize = u8::MAX as usize + 1;
 // Modulus for field operations
-const K_MODULUS: u8 = u8::MAX;
+pub const K_MODULUS: u8 = u8::MAX;
 // LFSR Polynomial that generates the field elements
-const K_POLYNOMIAL: usize = 0x11D;
+pub const K_POLYNOMIAL: usize = 0x11D;
 // Basis used for generating logarithm tables
-const K_CANTOR_BASIS: [u8; K_BITS] = [1, 214, 152, 146, 86, 200, 88, 230];
+pub const K_CANTOR_BASIS: [u8; K_BITS] = [1, 214, 152, 146, 86, 200, 88, 230];
 
 /// lookup tables
-mod lut {
+pub mod lut {
     include!(concat!(env!("OUT_DIR"), "/table.rs"));
 }
 
@@ -46,5 +46,22 @@ mod tests {
         exp_lut.dedup();
 
         assert_eq!(exp_lut.len(), K_ORDER - 1);
+    }
+
+    #[test]
+    fn mul8_lookup_table() {
+        let mul8_lut = lut::MUL8.to_vec();
+
+        assert_eq!(mul8_lut.len(), K_ORDER * K_ORDER);
+
+        for x in 0..K_ORDER {
+            for y in 0..K_ORDER {
+                if x == 0 {
+                    assert_eq!(mul8_lut[y][x], 0);
+                } else {
+                    assert_ne!(mul8_lut[y][x], 0);
+                }
+            }
+        }
     }
 }
