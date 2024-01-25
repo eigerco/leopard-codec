@@ -12,6 +12,7 @@ impl Aligned {
     }
 }
 
+#[allow(unused)]
 pub fn is_aligned(shards: &[&[u8]]) -> bool {
     !shards.is_empty()
         && shards

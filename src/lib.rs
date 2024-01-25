@@ -1,5 +1,3 @@
-use std::{mem, ops::Range};
-
 use bytes::{Buf, BufMut};
 use thiserror::Error;
 use utils::alloc_aligned;
@@ -45,18 +43,6 @@ pub enum LeopardError {
 
 /// A result type with [`LeopardError`].
 pub type Result<T, E = LeopardError> = std::result::Result<T, E>;
-
-trait SliceShrink {
-    fn shrink(&mut self, range: Range<usize>);
-}
-
-impl<T> SliceShrink for &mut [T] {
-    fn shrink(&mut self, range: Range<usize>) {
-        let (_, mut last) = mem::take(self).split_at_mut(range.start);
-        let (mid, _) = mem::take(&mut last).split_at_mut(range.end);
-        *self = mid;
-    }
-}
 
 pub struct LeopardFF8 {
     data_shards: usize,
@@ -110,69 +96,65 @@ impl LeopardFF8 {
         }
 
         let m = ceil_pow2(self.parity_shards);
-        // TODO:
-        // var work [][]byte
-        // if w, ok := r.workPool.Get().([][]byte); ok {
-        // 	work = w
-        // }
-        // TODO: I don't understand why do we create a work mod after so let's just go like so
-        let mut work_mod = alloc_aligned::<BLOCK_SIZE>(m * 2)?;
+        let mtrunc = m.min(self.data_shards);
+
+        let mut work = alloc_aligned::<BLOCK_SIZE>(m * 2)?;
+        let mut work_ref = work
+            .iter_mut()
+            .map(|shard| shard.as_mut_slice())
+            .collect::<Vec<_>>();
+
+        let mut xor_out = alloc_aligned::<BLOCK_SIZE>(m * 2)?;
+        let mut xor_out_ref = xor_out
+            .iter_mut()
+            .map(|shard| shard.as_mut_slice())
+            .collect::<Vec<_>>();
 
         // defer r.workPool.Put(work)
-
-        let mtrunc = m.min(self.data_shards);
 
         // TODO: what? it has only 256 values
         let skew_lut = &lut::FFT_SKEW[m - 1..];
 
-        // TODO: what? we've checked all have the same size
-        // Split large shards.
-        // More likely on lower shard count.
-        let mut off = 0;
-        let mut sh = vec![vec![0; shard_size]; shards.len()];
+        // ceil division
+        for offset in (0..shard_size).step_by(BLOCK_SIZE) {
+            let end = (offset + BLOCK_SIZE).min(shard_size);
+            let mut shards_chunk = shards
+                .iter_mut()
+                .map(|shard| &mut shard[offset..end])
+                .collect::<Vec<_>>();
+            let mut work_chunk = work_ref
+                .iter_mut()
+                .map(|shard| &mut shard[offset..end])
+                .collect::<Vec<_>>();
+            let mut xor_out_chunk = xor_out_ref
+                .iter_mut()
+                .map(|shard| &mut shard[offset..end])
+                .collect::<Vec<_>>();
 
-        // let mut work_mod = alloc_aligned::<BLOCK_SIZE>(m * 2)?;
-        // work_mod
-        //     .iter_mut()
-        //     .zip(work.iter())
-        //     .for_each(|(wm, w)| wm.copy_from_slice(w));
-
-        let (data_shards, parity_shards) = shards.split_at_mut(self.data_shards);
-        let mut data_shards_chunk: Vec<_> = data_shards.iter_mut().collect();
-        let mut parity_shards_chunk: Vec<_> = parity_shards.iter_mut().collect();
-
-        while off < shard_size {
-            let mut work: Vec<_> = work_mod.iter_mut().map(|shard| &mut shard[..]).collect();
-            let mut sh: Vec<_> = sh.iter_mut().map(|shard| &mut shard[..]).collect();
-            let mut end = off + BLOCK_SIZE;
-            if end > shard_size {
-                end = shard_size;
-                let sz = shard_size - off;
-                work.iter_mut().for_each(|shard| {
-                    *shard = &mut mem::take(shard)[..sz];
-                })
+            // copy the input to the work table
+            for (shard, work) in shards_chunk[self.data_shards..]
+                .iter()
+                .zip(work_chunk.iter_mut())
+            {
+                work.copy_from_slice(shard);
             }
 
-            sh.iter_mut()
-                .zip(data_shards.iter_mut())
-                .for_each(|(sh, input)| {
-                    *sh = &mut input[off..end];
-                });
-
-            work.iter_mut()
-                .zip(parity_shards.iter_mut())
-                .for_each(|(work, parity)| {
-                    *work = &mut parity[off..end];
-                });
-
             ifft_dit_encoder(
-                &mut sh[..self.data_shards],
+                &shards_chunk[..self.data_shards],
                 mtrunc,
-                &mut work,
+                &mut work_chunk,
                 None, // No xor output
                 m,
                 skew_lut,
             );
+
+            // copy the work back to input
+            for (shard, work) in shards_chunk[self.data_shards..]
+                .iter_mut()
+                .zip(work_chunk.iter())
+            {
+                shard.copy_from_slice(work);
+            }
 
             let last_count = self.data_shards % m;
             let mut skew_lut2 = skew_lut;
@@ -183,34 +165,58 @@ impl LeopardFF8 {
                 for _ in (m..self.data_shards - m).step_by(m) {
                     // work <- work xor IFFT(data + i, m, m + i)
                     skew_lut2 = &skew_lut2[m..];
-                    let (xor_output, temp_work) = work.split_at_mut(m);
                     ifft_dit_encoder(
-                        &mut sh[m..],
+                        &shards_chunk[m..],
                         m,
-                        temp_work,
-                        Some(xor_output), // No xor output
+                        &mut work_chunk[m..],
+                        Some(&mut xor_out_chunk),
                         m,
                         &skew_lut2[m..],
                     );
+
+                    // copy the xor to work
+                    for (xor, work) in xor_out_chunk[..m].iter().zip(work_chunk.iter_mut()) {
+                        work.copy_from_slice(xor);
+                    }
+
+                    // copy the work to input
+                    for (shard, work) in shards_chunk[m..].iter_mut().zip(work_chunk[m..].iter()) {
+                        shard.copy_from_slice(work);
+                    }
                 }
 
                 // Handle final partial set of m pieces:
                 if last_count != 0 {
-                    let (xor_output, temp_work) = work.split_at_mut(m);
                     ifft_dit_encoder(
-                        &mut sh[m..],
+                        &shards_chunk[m..],
                         m,
-                        temp_work,
-                        Some(xor_output), // No xor output
+                        &mut work_chunk[m..],
+                        Some(&mut xor_out_chunk),
                         m,
                         &skew_lut2[m..],
                     );
+
+                    // copy the xor to work
+                    for (xor, work) in xor_out_chunk[..m].iter().zip(work_chunk.iter_mut()) {
+                        work.copy_from_slice(xor);
+                    }
+
+                    // copy the work to input
+                    for (shard, work) in shards_chunk[m..].iter_mut().zip(work_chunk[m..].iter()) {
+                        shard.copy_from_slice(work);
+                    }
                 }
             }
 
             // work <- FFT(work, m, 0)
-            fft_dit(work.as_mut_slice(), self.parity_shards, m, &*lut::FFT_SKEW);
-            off += BLOCK_SIZE;
+            fft_dit(&mut work_chunk, self.parity_shards, m, &*lut::FFT_SKEW);
+
+            for (shard, work) in shards_chunk[self.data_shards..]
+                .iter_mut()
+                .zip(work_chunk.iter())
+            {
+                shard.copy_from_slice(work);
+            }
         }
 
         Ok(())
@@ -248,23 +254,6 @@ fn check_shards(shards: &[impl AsRef<[u8]>], allow_zero: bool) -> Result<()> {
 
     Ok(())
 }
-
-// pub fn ref_mul_add(x: &mut [u8], y: &[u8], log_m: u8) {
-//     #[cfg(target_arch = "aarch64")]
-//     {
-//         let mul8_lut = lut::MUL8[log_m as usize];
-//         for (x, y) in x.chunks_exact_mut(64).zip(y.chunks_exact(64)) {
-//             for i in 0..64 {
-//                 x[i] ^= mul8_lut[y[i] as usize];
-//             }
-//         }
-//         return;
-//     }
-
-//     let (prefix, x8, suffix) = unsafe { x.align_to_mut::<u64>() };
-//     debug_assert!(prefix.is_empty());
-//     debug_assert!(suffix.is_empty());
-// }
 
 // z = x + y (mod Modulus)
 #[inline]
@@ -381,7 +370,7 @@ const fn ceil_pow2(x: usize) -> usize {
 
 // Unrolled IFFT for encoder
 fn ifft_dit_encoder(
-    data: &mut [&mut [u8]],
+    data: &[impl AsRef<[u8]>],
     mtrunc: usize,
     work: &mut [&mut [u8]],
     xor_output: Option<&mut [&mut [u8]]>,
@@ -393,7 +382,7 @@ fn ifft_dit_encoder(
     // found that it only yields a 4% performance improvement, which is not
     // worth the extra complexity.
     for i in 0..mtrunc {
-        data[i].copy_from_slice(work[i]);
+        work[i].copy_from_slice(data[i].as_ref());
     }
     for row in work[mtrunc..m].iter_mut() {
         row.fill(0);
@@ -429,7 +418,7 @@ fn ifft_dit_encoder(
         // assume that dist = m / 2
         assert_eq!(dist * 2, m);
 
-        let log_m = lut::fft_skew(dist as u8);
+        let log_m = skew_lut[dist];
 
         if log_m == MODULUS {
             let (input, output) = work.split_at_mut(dist);
@@ -481,7 +470,7 @@ fn ifft_dit4(work: &mut [&mut [u8]], dist: usize, log_m01: u8, log_m23: u8, log_
     // Second layer:
     if log_m02 == MODULUS {
         slice_xor(&*dist0[0], dist2[0]);
-        slice_xor(&*dist1[0], dist2[0]);
+        slice_xor(&*dist1[0], dist3[0]);
     } else {
         ifft_dit2(dist0[0], dist2[0], log_m02);
         ifft_dit2(dist1[0], dist3[0], log_m02);
@@ -565,7 +554,7 @@ fn fft_dit4(work: &mut [&mut [u8]], dist: usize, log_m01: u8, log_m23: u8, log_m
     if log_m23 == MODULUS {
         slice_xor(&*dist2[0], dist3[0]);
     } else {
-        ifft_dit2(dist2[0], dist3[0], log_m23);
+        fft_dit2(dist2[0], dist3[0], log_m23);
     }
 }
 
@@ -610,21 +599,118 @@ fn slice_xor(mut input: impl Buf, mut output: &mut [u8]) {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+
     use super::*;
 
     #[test]
-    fn test_encoding() {
+    fn test_slice_xor() {
+        let mut x = [1, 2, 3, 4, 5, 6, 7];
+        let y = [7, 6, 5, 4, 3, 2, 1];
+
+        slice_xor(&y[..], &mut x);
+
+        assert_eq!(x, [6, 4, 6, 0, 6, 4, 6]);
+    }
+
+    #[test]
+    fn test_encoding_small() {
         let leo = LeopardFF8::new(1, 1).unwrap();
 
         let mut input = include!("../test_data/encode-ff8-1-64-input");
         let expected = include!("../test_data/encode-ff8-1-64-output");
-
-        println!("{input:?}");
 
         let mut input_ref: Vec<_> = input.iter_mut().map(|shard| shard.as_mut_slice()).collect();
 
         leo.encode(&mut input_ref).unwrap();
 
         assert_eq!(input, expected);
+    }
+
+    #[test]
+    fn test_encoding_big() {
+        let leo = LeopardFF8::new(100, 100).unwrap();
+
+        let mut input = include!("../test_data/encode-ff8-100-128-input");
+        let expected = include!("../test_data/encode-ff8-100-128-output");
+
+        let mut input_ref: Vec<_> = input.iter_mut().map(|shard| shard.as_mut_slice()).collect();
+
+        leo.encode(&mut input_ref).unwrap();
+
+        assert_eq!(input, expected);
+    }
+
+    #[test]
+    fn test_ifft_dit_encoder() {
+        let data_shards = 100;
+        let mtrunc = 100;
+        let m = 128;
+        let skew_lut = &lut::FFT_SKEW[m - 1..];
+
+        let input = include!("../test_data/ifft-encoder-input");
+        let expected = include!("../test_data/ifft-encoder-output");
+
+        let mut work = expected;
+        for shard in work.iter_mut() {
+            shard.fill(0);
+        }
+        let mut work_ref = work
+            .iter_mut()
+            .map(|shard| shard.as_mut_slice())
+            .collect::<Vec<_>>();
+
+        ifft_dit_encoder(
+            &input[..data_shards],
+            mtrunc,
+            &mut work_ref,
+            None,
+            m,
+            skew_lut,
+        );
+
+        assert_eq!(work, expected);
+    }
+
+    #[test]
+    fn test_ifft_dit4() {
+        let testcases = fs::read_to_string("test_data/ifft-dit-4").unwrap();
+
+        let mut input: Vec<Vec<u8>> = vec![];
+        let mut dist = 0usize;
+        let mut log_m01 = 0u8;
+        let mut log_m23 = 0u8;
+        let mut log_m02 = 0u8;
+
+        for (n, line) in testcases.lines().enumerate() {
+            match n % 6 {
+                0 => {
+                    input = serde_json::from_str(line).unwrap();
+                }
+                1 => {
+                    dist = line.parse().unwrap();
+                }
+                2 => {
+                    log_m01 = line.parse().unwrap();
+                }
+                3 => {
+                    log_m23 = line.parse().unwrap();
+                }
+                4 => {
+                    log_m02 = line.parse().unwrap();
+                }
+                5 => {
+                    let expected: Vec<Vec<u8>> = serde_json::from_str(line).unwrap();
+                    let mut input_ref = input
+                        .iter_mut()
+                        .map(|shard| shard.as_mut_slice())
+                        .collect::<Vec<_>>();
+
+                    ifft_dit4(&mut input_ref, dist, log_m01, log_m23, log_m02);
+                    assert_eq!(input, expected);
+                }
+                _ => unreachable!(),
+            }
+        }
     }
 }
