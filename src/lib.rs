@@ -25,7 +25,7 @@ mod utils;
 /// Possible errors that can happen when interacting with Leopard.
 #[derive(Debug, Error)]
 pub enum LeopardError {
-    #[error("Maximum shard number ({}) exceeded: {0}", u16::MAX)]
+    #[error("Maximum shard number ({}) exceeded: {0}", ORDER)]
     MaxShardNumberExceeded(usize),
 
     #[error("Incorrect amount of shards ({0}), expected ({1})")]
@@ -65,7 +65,7 @@ impl LeopardFF8 {
         // 	   r.inversion = make(map[[inversion8Bytes]byte]leopardGF8cache, r.totalShards)
         // }
 
-        if total_shards > u16::MAX as usize {
+        if total_shards > ORDER {
             Err(LeopardError::MaxShardNumberExceeded(total_shards))
         } else {
             Ok(Self {
