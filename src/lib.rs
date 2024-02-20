@@ -1,6 +1,5 @@
 use bytes::{Buf, BufMut};
 use thiserror::Error;
-use utils::alloc_aligned;
 
 // Number of bits per element
 pub const BITS: usize = 8;
@@ -20,7 +19,7 @@ const BLOCK_SIZE: usize = 32 << 10;
 /// lookup tables
 pub mod lut;
 
-mod utils;
+mod align;
 
 /// Possible errors that can happen when interacting with Leopard.
 #[derive(Debug, Error)]
@@ -80,18 +79,16 @@ impl LeopardFF8 {
 
     fn encode_inner(&self, shards: &mut [&mut [u8]]) -> Result<()> {
         let shard_size = shard_size(shards);
-        if shard_size % 64 != 0 {
-            return Err(LeopardError::InvalidShardSize(shard_size));
-        }
 
         let m = ceil_pow2(self.parity_shards);
         let mtrunc = m.min(self.data_shards);
 
-        let mut work = alloc_aligned(m * 2, shard_size)?;
-        let mut work_ref = work.chunks_mut(shard_size).collect::<Vec<_>>();
+        // add alignment to make sure we have enough space after aligning
+        let mut work_mem = align::alloc_zeroed_with_padding(2 * m * shard_size);
+        let mut work = align::shards_aligned_mut(&mut work_mem, shard_size)?;
 
-        let mut xor_out = alloc_aligned(m * 2, shard_size)?;
-        let mut xor_out_ref = xor_out.chunks_mut(shard_size).collect::<Vec<_>>();
+        let mut xor_out_mem = align::alloc_zeroed_with_padding(2 * m * shard_size);
+        let mut xor_out = align::shards_aligned_mut(&mut xor_out_mem, shard_size)?;
 
         let skew_lut = &lut::FFT_SKEW[m - 1..];
 
@@ -102,11 +99,11 @@ impl LeopardFF8 {
                 .iter_mut()
                 .map(|shard| &mut shard[offset..end])
                 .collect::<Vec<_>>();
-            let mut work_chunk = work_ref
+            let mut work_chunk = work
                 .iter_mut()
                 .map(|shard| &mut shard[offset..end])
                 .collect::<Vec<_>>();
-            let mut xor_out_chunk = xor_out_ref
+            let mut xor_out_chunk = xor_out
                 .iter_mut()
                 .map(|shard| &mut shard[offset..end])
                 .collect::<Vec<_>>();
