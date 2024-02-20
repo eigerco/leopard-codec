@@ -19,8 +19,6 @@ const BLOCK_SIZE: usize = 32 << 10;
 /// lookup tables
 pub mod lut;
 
-mod align;
-
 /// Possible errors that can happen when interacting with Leopard.
 #[derive(Debug, Error)]
 pub enum LeopardError {
@@ -83,11 +81,11 @@ impl LeopardFF8 {
         let m = ceil_pow2(self.parity_shards);
         let mtrunc = m.min(self.data_shards);
 
-        let mut work_mem = align::alloc_zeroed_with_padding(2 * m * shard_size);
-        let mut work = align::shards_aligned_mut(&mut work_mem, shard_size)?;
+        let mut work_mem = vec![0; 2 * m * shard_size];
+        let mut work: Vec<_> = work_mem.chunks_exact_mut(shard_size).collect();
 
-        let mut xor_out_mem = align::alloc_zeroed_with_padding(2 * m * shard_size);
-        let mut xor_out = align::shards_aligned_mut(&mut xor_out_mem, shard_size)?;
+        let mut xor_out_mem = vec![0; 2 * m * shard_size];
+        let mut xor_out: Vec<_> = xor_out_mem.chunks_exact_mut(shard_size).collect();
 
         let skew_lut = &lut::FFT_SKEW[m - 1..];
 
