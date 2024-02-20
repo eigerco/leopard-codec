@@ -77,6 +77,9 @@ impl LeopardFF8 {
 
     fn encode_inner(&self, shards: &mut [&mut [u8]]) -> Result<()> {
         let shard_size = shard_size(shards);
+        if shard_size % 64 != 0 {
+            return Err(LeopardError::InvalidShardSize(shard_size));
+        }
 
         let m = ceil_pow2(self.parity_shards);
         let mtrunc = m.min(self.data_shards);
