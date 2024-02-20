@@ -20,20 +20,18 @@ pub fn is_aligned(shards: &[&[u8]]) -> bool {
             .all(|shard| shard.as_ptr().align_offset(ALIGN) != 0)
 }
 
-pub fn alloc_aligned<const SHARD_SIZE: usize>(shards: usize) -> Result<Vec<[u8; SHARD_SIZE]>> {
-    if SHARD_SIZE % ALIGN != 0 {
-        return Err(LeopardError::InvalidShardSize(SHARD_SIZE));
+pub fn alloc_aligned(shards: usize, shard_size: usize) -> Result<Vec<u8>> {
+    if shard_size % ALIGN != 0 {
+        return Err(LeopardError::InvalidShardSize(shard_size));
     }
 
-    let ratio = SHARD_SIZE / ALIGN;
-
     // create a vec of Aligned to make sure they are aligned properly
-    let aligned_mem = vec![Aligned::zeroed(); shards * ratio];
+    let aligned_mem = vec![Aligned::zeroed(); shards * shard_size / ALIGN];
 
     // grab the raw parts
-    let length = aligned_mem.len() / ratio;
-    let capacity = aligned_mem.capacity() / ratio;
-    let mem_ptr = aligned_mem.leak().as_mut_ptr() as *mut [u8; SHARD_SIZE];
+    let length = aligned_mem.len() * ALIGN;
+    let capacity = aligned_mem.capacity() * ALIGN;
+    let mem_ptr = aligned_mem.leak().as_mut_ptr() as *mut u8;
 
     // SAFETY: this is safe because original vector points to [u8; ALIGN]
     // and SHARD_SIZE is a multiple of align. And both the length and capacity
@@ -53,23 +51,23 @@ mod tests {
 
     #[test]
     fn shard_size_must_be_multiple_of_align() {
-        alloc_aligned::<1>(10).unwrap_err();
-        alloc_aligned::<10>(10).unwrap_err();
-        alloc_aligned::<32>(10).unwrap_err();
-        alloc_aligned::<63>(10).unwrap_err();
-        alloc_aligned::<127>(10).unwrap_err();
-        alloc_aligned::<257>(10).unwrap_err();
+        alloc_aligned(10, 1).unwrap_err();
+        alloc_aligned(10, 10).unwrap_err();
+        alloc_aligned(10, 32).unwrap_err();
+        alloc_aligned(10, 63).unwrap_err();
+        alloc_aligned(10, 127).unwrap_err();
+        alloc_aligned(10, 257).unwrap_err();
 
-        alloc_aligned::<64>(10).unwrap();
-        alloc_aligned::<128>(10).unwrap();
-        alloc_aligned::<192>(10).unwrap();
-        alloc_aligned::<256>(10).unwrap();
+        alloc_aligned(10, 64).unwrap();
+        alloc_aligned(10, 128).unwrap();
+        alloc_aligned(10, 192).unwrap();
+        alloc_aligned(10, 256).unwrap();
     }
 
-    fn is_properly_aligned<const S: usize>(size: usize) {
-        let mem = alloc_aligned::<S>(size).unwrap();
+    fn is_properly_aligned(shards: usize, shard_size: usize) {
+        let mem = alloc_aligned(shards, shard_size).unwrap();
 
-        for shard in mem.iter() {
+        for shard in mem.chunks(shard_size) {
             assert_eq!(shard.as_ptr().align_offset(ALIGN), 0);
             assert!(shard.iter().all(|&byte| byte == 0));
         }
@@ -77,13 +75,13 @@ mod tests {
 
     #[test]
     fn check_alignment() {
-        for size in [2, 3, 7, 13, 21, 50, 77, 100] {
-            is_properly_aligned::<64>(size);
-            is_properly_aligned::<128>(size);
-            is_properly_aligned::<192>(size);
-            is_properly_aligned::<256>(size);
-            is_properly_aligned::<512>(size);
-            is_properly_aligned::<1024>(size);
+        for shards in [2, 3, 7, 13, 21, 50, 77, 100] {
+            is_properly_aligned(shards, 64);
+            is_properly_aligned(shards, 128);
+            is_properly_aligned(shards, 192);
+            is_properly_aligned(shards, 256);
+            is_properly_aligned(shards, 512);
+            is_properly_aligned(shards, 1024);
         }
     }
 }

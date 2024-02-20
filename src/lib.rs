@@ -48,22 +48,11 @@ pub struct LeopardFF8 {
     data_shards: usize,
     parity_shards: usize,
     total_shards: usize,
-    // workPool    sync.Pool
-    // inversion   map[[inversion8Bytes]byte]leopardGF8cache
-    // inversionMu sync.Mutex
-
-    // o options
 }
 
 impl LeopardFF8 {
     pub fn new(data_shards: usize, parity_shards: usize) -> Result<Self> {
         let total_shards = data_shards + parity_shards;
-
-        // if opt.inversionCache && (r.totalShards <= 64 || opt.forcedInversionCache) {
-        // 	   // Inversion cache is relatively ineffective for big shard counts and takes up potentially lots of memory
-        // 	   // r.totalShards is not covering the space, but an estimate.
-        // 	   r.inversion = make(map[[inversion8Bytes]byte]leopardGF8cache, r.totalShards)
-        // }
 
         if total_shards > ORDER {
             Err(LeopardError::MaxShardNumberExceeded(total_shards))
@@ -98,21 +87,12 @@ impl LeopardFF8 {
         let m = ceil_pow2(self.parity_shards);
         let mtrunc = m.min(self.data_shards);
 
-        let mut work = alloc_aligned::<BLOCK_SIZE>(m * 2)?;
-        let mut work_ref = work
-            .iter_mut()
-            .map(|shard| shard.as_mut_slice())
-            .collect::<Vec<_>>();
+        let mut work = alloc_aligned(m * 2, shard_size)?;
+        let mut work_ref = work.chunks_mut(shard_size).collect::<Vec<_>>();
 
-        let mut xor_out = alloc_aligned::<BLOCK_SIZE>(m * 2)?;
-        let mut xor_out_ref = xor_out
-            .iter_mut()
-            .map(|shard| shard.as_mut_slice())
-            .collect::<Vec<_>>();
+        let mut xor_out = alloc_aligned(m * 2, shard_size)?;
+        let mut xor_out_ref = xor_out.chunks_mut(shard_size).collect::<Vec<_>>();
 
-        // defer r.workPool.Put(work)
-
-        // TODO: what? it has only 256 values
         let skew_lut = &lut::FFT_SKEW[m - 1..];
 
         // ceil division
