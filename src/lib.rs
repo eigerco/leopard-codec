@@ -83,7 +83,6 @@ impl LeopardFF8 {
         let m = ceil_pow2(self.parity_shards);
         let mtrunc = m.min(self.data_shards);
 
-        // add alignment to make sure we have enough space after aligning
         let mut work_mem = align::alloc_zeroed_with_padding(2 * m * shard_size);
         let mut work = align::shards_aligned_mut(&mut work_mem, shard_size)?;
 
