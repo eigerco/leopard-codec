@@ -1,6 +1,5 @@
 use bytes::{Buf, BufMut};
 use thiserror::Error;
-use utils::alloc_aligned;
 
 // Number of bits per element
 pub const BITS: usize = 8;
@@ -19,8 +18,6 @@ const BLOCK_SIZE: usize = 32 << 10;
 
 /// lookup tables
 pub mod lut;
-
-mod utils;
 
 /// Possible errors that can happen when interacting with Leopard.
 #[derive(Debug, Error)]
@@ -48,22 +45,11 @@ pub struct LeopardFF8 {
     data_shards: usize,
     parity_shards: usize,
     total_shards: usize,
-    // workPool    sync.Pool
-    // inversion   map[[inversion8Bytes]byte]leopardGF8cache
-    // inversionMu sync.Mutex
-
-    // o options
 }
 
 impl LeopardFF8 {
     pub fn new(data_shards: usize, parity_shards: usize) -> Result<Self> {
         let total_shards = data_shards + parity_shards;
-
-        // if opt.inversionCache && (r.totalShards <= 64 || opt.forcedInversionCache) {
-        // 	   // Inversion cache is relatively ineffective for big shard counts and takes up potentially lots of memory
-        // 	   // r.totalShards is not covering the space, but an estimate.
-        // 	   r.inversion = make(map[[inversion8Bytes]byte]leopardGF8cache, r.totalShards)
-        // }
 
         if total_shards > ORDER {
             Err(LeopardError::MaxShardNumberExceeded(total_shards))
@@ -98,21 +84,12 @@ impl LeopardFF8 {
         let m = ceil_pow2(self.parity_shards);
         let mtrunc = m.min(self.data_shards);
 
-        let mut work = alloc_aligned::<BLOCK_SIZE>(m * 2)?;
-        let mut work_ref = work
-            .iter_mut()
-            .map(|shard| shard.as_mut_slice())
-            .collect::<Vec<_>>();
+        let mut work_mem = vec![0; 2 * m * shard_size];
+        let mut work: Vec<_> = work_mem.chunks_exact_mut(shard_size).collect();
 
-        let mut xor_out = alloc_aligned::<BLOCK_SIZE>(m * 2)?;
-        let mut xor_out_ref = xor_out
-            .iter_mut()
-            .map(|shard| shard.as_mut_slice())
-            .collect::<Vec<_>>();
+        let mut xor_out_mem = vec![0; 2 * m * shard_size];
+        let mut xor_out: Vec<_> = xor_out_mem.chunks_exact_mut(shard_size).collect();
 
-        // defer r.workPool.Put(work)
-
-        // TODO: what? it has only 256 values
         let skew_lut = &lut::FFT_SKEW[m - 1..];
 
         // ceil division
@@ -122,11 +99,11 @@ impl LeopardFF8 {
                 .iter_mut()
                 .map(|shard| &mut shard[offset..end])
                 .collect::<Vec<_>>();
-            let mut work_chunk = work_ref
+            let mut work_chunk = work
                 .iter_mut()
                 .map(|shard| &mut shard[offset..end])
                 .collect::<Vec<_>>();
-            let mut xor_out_chunk = xor_out_ref
+            let mut xor_out_chunk = xor_out
                 .iter_mut()
                 .map(|shard| &mut shard[offset..end])
                 .collect::<Vec<_>>();
