@@ -1,3 +1,5 @@
+//! Build script generating lookup tables.
+
 use std::{array, env, fs::File, path::Path};
 
 // Number of bits per element
