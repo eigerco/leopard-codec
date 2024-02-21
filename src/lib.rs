@@ -25,18 +25,23 @@ mod utils;
 /// Possible errors that can happen when interacting with Leopard.
 #[derive(Debug, Error)]
 pub enum LeopardError {
+    /// Maximum number of shards exceeded.
     #[error("Maximum shard number ({}) exceeded: {0}", ORDER)]
     MaxShardNumberExceeded(usize),
 
+    /// Provided shards doesn't match the amounts the codec was initialized with.
     #[error("Incorrect amount of shards ({0}), expected ({1})")]
     IncorrectAmountOfShards(usize, usize),
 
+    /// Some shards contain no data.
     #[error("Shards contain no data")]
     EmptyShards,
 
+    /// Some shards are of different lengths.
     #[error("Shards of different lengths found")]
     UnequalShardsLengths,
 
+    /// Shard size is invalid.
     #[error("Shard size ({0}) should be a multiple of 64")]
     InvalidShardSize(usize),
 }
@@ -44,6 +49,9 @@ pub enum LeopardError {
 /// A result type with [`LeopardError`].
 pub type Result<T, E = LeopardError> = std::result::Result<T, E>;
 
+/// A reed solomon codec using leopard algorithm over 8bit finite fields.
+///
+/// Can only be used for encoding at most 256 shards.
 pub struct LeopardFF8 {
     data_shards: usize,
     parity_shards: usize,
@@ -56,6 +64,11 @@ pub struct LeopardFF8 {
 }
 
 impl LeopardFF8 {
+    /// Create a new leopard codec for given amount of shards.
+    ///
+    /// # Errors
+    ///
+    /// If total amount of shards exceeds 256.
     pub fn new(data_shards: usize, parity_shards: usize) -> Result<Self> {
         let total_shards = data_shards + parity_shards;
 
@@ -76,6 +89,11 @@ impl LeopardFF8 {
         }
     }
 
+    /// Encode parity data into given shards.
+    ///
+    /// # Errors
+    ///
+    /// If incorrect amount of shards were provided or the shards didn't pass validation.
     pub fn encode(&self, shards: &mut [&mut [u8]]) -> Result<()> {
         if shards.len() != self.total_shards {
             return Err(LeopardError::IncorrectAmountOfShards(
