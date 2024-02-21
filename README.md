@@ -1,8 +1,8 @@
 # Leopard codec
 
 This is a Rust rewrite of a Go `O(n*log n)` implementation of Reed-Solomon codes,
-ported from the https://github.com/klauspost/reedsolomon,
-which is a port from the C++ library https://github.com/catid/leopard.
+ported from the [klauspost/reedsolomon](https://github.com/klauspost/reedsolomon),
+which is a port of the C++ library [catid/leopard](https://github.com/catid/leopard).
 
 
 The original implementation is based on the paper:
