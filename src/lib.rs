@@ -1,18 +1,20 @@
+#![doc = include_str!("../README.md")]
+
 use bytes::{Buf, BufMut};
 use thiserror::Error;
 
-// Number of bits per element
+/// Number of bits per element
 pub const BITS: usize = 8;
-// Finite field order: Number of elements in the field
+/// Finite field order: Number of elements in the field
 pub const ORDER: usize = u8::MAX as usize + 1;
-// Modulus for field operations
+/// Modulus for field operations
 pub const MODULUS: u8 = u8::MAX;
-// LFSR Polynomial that generates the field elements
+/// LFSR Polynomial that generates the field elements
 pub const POLYNOMIAL: usize = 0x11D;
-// Basis used for generating logarithm tables
+/// Basis used for generating logarithm tables
 pub const CANTOR_BASIS: [u8; BITS] = [1, 214, 152, 146, 86, 200, 88, 230];
 
-// Size of blocks during encoding
+/// Size of blocks during encoding
 const BLOCK_SIZE: usize = 32 << 10;
 // const INVERSION8_BYTES: usize = 256 / 8;
 
