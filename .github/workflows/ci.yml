@@ -1,0 +1,87 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+jobs:
+  clippy:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v1
+
+    - name: Install wasm Rust
+      uses: actions-rs/toolchain@v1
+      with:
+        toolchain: stable
+        components: clippy
+        target: wasm32-unknown-unknown
+
+    - name: Run clippy for native
+      run: cargo clippy --all --all-targets -- -D warnings -D missing-docs
+
+    - name: Run clippy for wasm32
+      run: cargo clippy --all --all-targets --target=wasm32-unknown-unknown -- -D warnings -D missing-docs
+
+
+  docs:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v1
+
+    - name: Run rustdoc check
+      env:
+        RUSTDOCFLAGS: -D warnings
+      run: cargo doc
+
+
+  fmt:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v1
+    - name: Run fmt
+      run: cargo fmt -- --check
+
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v1
+
+    - name: Set up cargo cache
+      uses: actions/cache@v3
+      with:
+        path: |
+          ~/.cargo/bin/
+          ~/.cargo/registry/index/
+          ~/.cargo/registry/cache/
+          ~/.cargo/git/db/
+          target/
+        key: cargo-${{ hashFiles('**/Cargo.lock') }}
+        restore-keys:
+          cargo-${{ hashFiles('**/Cargo.lock') }}
+          cargo-
+
+    - name: Run tests
+      run: cargo test
+
+
+  unused-deps:
+    runs-on: ubuntu-latest
+    name: unused dependencies
+    steps:
+    - name: Checkout sources
+      uses: actions/checkout@v3
+
+    - name: Install toolchain
+      uses: dtolnay/rust-toolchain@nightly
+
+    - name: Install cargo-udeps
+      uses: taiki-e/cache-cargo-install-action@v1
+      with:
+        tool: cargo-udeps@0.1.43
+
+    - name: Check for unused dependencies
+      run: cargo +nightly udeps --all-features --all-targets
