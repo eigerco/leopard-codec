@@ -32,11 +32,13 @@ pub fn mul(x: u8, y: u8) -> u8 {
 
 /// # Panics
 /// If x equals to [`MODULUS`]
+#[allow(unused)]
 #[inline]
 pub fn fft_skew(x: u8) -> u8 {
     FFT_SKEW[x as usize]
 }
 
+#[allow(unused)]
 #[inline]
 pub fn log_walsh(x: u8) -> u8 {
     // SAFETY: it has the size of ORDER, so u8 must be in bounds

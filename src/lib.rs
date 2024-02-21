@@ -17,7 +17,7 @@ const BLOCK_SIZE: usize = 32 << 10;
 // const INVERSION8_BYTES: usize = 256 / 8;
 
 /// lookup tables
-pub mod lut;
+mod lut;
 
 /// Possible errors that can happen when interacting with Leopard.
 #[derive(Debug, Error)]
@@ -25,10 +25,6 @@ pub enum LeopardError {
     /// Maximum number of shards exceeded.
     #[error("Maximum shard number ({}) exceeded: {0}", ORDER)]
     MaxShardNumberExceeded(usize),
-
-    /// Provided shards doesn't match the amounts the codec was initialized with.
-    #[error("Incorrect amount of shards ({0}), expected ({1})")]
-    IncorrectAmountOfShards(usize, usize),
 
     /// Some shards contain no data.
     #[error("Shards contain no data")]
@@ -46,175 +42,145 @@ pub enum LeopardError {
 /// A result type with [`LeopardError`].
 pub type Result<T, E = LeopardError> = std::result::Result<T, E>;
 
-/// A reed solomon codec using leopard algorithm over 8bit finite fields.
+/// Encode parity data into given shards.
 ///
-/// Can only be used for encoding at most 256 shards.
-pub struct LeopardFF8 {
-    data_shards: usize,
-    parity_shards: usize,
-    total_shards: usize,
+/// The first `data_shards` shards will be the treated as data shards
+/// and the rest as a parity shards.
+///
+/// # Errors
+///
+/// If too many shards provided or shards were of incorrect or different lengths.
+pub fn encode(shards: &mut [&mut [u8]], data_shards: usize) -> Result<()> {
+    if shards.len() > ORDER {
+        return Err(LeopardError::MaxShardNumberExceeded(shards.len()));
+    }
+
+    let shard_size = check_shards(shards, false)?;
+    if shard_size % 64 != 0 {
+        return Err(LeopardError::InvalidShardSize(shard_size));
+    }
+
+    encode_inner(shards, data_shards, shard_size);
+
+    Ok(())
 }
 
-impl LeopardFF8 {
-    /// Create a new leopard codec for given amount of shards.
-    ///
-    /// # Errors
-    ///
-    /// If total amount of shards exceeds 256.
-    pub fn new(data_shards: usize, parity_shards: usize) -> Result<Self> {
-        let total_shards = data_shards + parity_shards;
+fn encode_inner(shards: &mut [&mut [u8]], data_shards: usize, shard_size: usize) {
+    let parity_shards = shards.len() - data_shards;
 
-        if total_shards > ORDER {
-            Err(LeopardError::MaxShardNumberExceeded(total_shards))
-        } else {
-            Ok(Self {
-                data_shards,
-                parity_shards,
-                total_shards,
-            })
-        }
-    }
+    let m = ceil_pow2(parity_shards);
+    let mtrunc = m.min(data_shards);
 
-    /// Encode parity data into given shards.
-    ///
-    /// # Errors
-    ///
-    /// If incorrect amount of shards were provided or the shards didn't pass validation.
-    pub fn encode(&self, shards: &mut [&mut [u8]]) -> Result<()> {
-        if shards.len() != self.total_shards {
-            return Err(LeopardError::IncorrectAmountOfShards(
-                shards.len(),
-                self.total_shards,
-            ));
-        }
+    let mut work_mem = vec![0; 2 * m * shard_size];
+    let mut work: Vec<_> = work_mem.chunks_exact_mut(shard_size).collect();
 
-        check_shards(shards, false)?;
+    let mut xor_out_mem = vec![0; 2 * m * shard_size];
+    let mut xor_out: Vec<_> = xor_out_mem.chunks_exact_mut(shard_size).collect();
 
-        self.encode_inner(shards)
-    }
+    let skew_lut = &lut::FFT_SKEW[m - 1..];
 
-    fn encode_inner(&self, shards: &mut [&mut [u8]]) -> Result<()> {
-        let shard_size = shard_size(shards);
-        if shard_size % 64 != 0 {
-            return Err(LeopardError::InvalidShardSize(shard_size));
+    // ceil division
+    for offset in (0..shard_size).step_by(BLOCK_SIZE) {
+        let end = (offset + BLOCK_SIZE).min(shard_size);
+        let mut shards_chunk = shards
+            .iter_mut()
+            .map(|shard| &mut shard[offset..end])
+            .collect::<Vec<_>>();
+        let mut work_chunk = work
+            .iter_mut()
+            .map(|shard| &mut shard[offset..end])
+            .collect::<Vec<_>>();
+        let mut xor_out_chunk = xor_out
+            .iter_mut()
+            .map(|shard| &mut shard[offset..end])
+            .collect::<Vec<_>>();
+
+        // copy the input to the work table
+        for (shard, work) in shards_chunk[data_shards..]
+            .iter()
+            .zip(work_chunk.iter_mut())
+        {
+            work.copy_from_slice(shard);
         }
 
-        let m = ceil_pow2(self.parity_shards);
-        let mtrunc = m.min(self.data_shards);
+        ifft_dit_encoder(
+            &shards_chunk[..data_shards],
+            mtrunc,
+            &mut work_chunk,
+            None, // No xor output
+            m,
+            skew_lut,
+        );
 
-        let mut work_mem = vec![0; 2 * m * shard_size];
-        let mut work: Vec<_> = work_mem.chunks_exact_mut(shard_size).collect();
+        // copy the work back to input
+        for (shard, work) in shards_chunk[data_shards..]
+            .iter_mut()
+            .zip(work_chunk.iter())
+        {
+            shard.copy_from_slice(work);
+        }
 
-        let mut xor_out_mem = vec![0; 2 * m * shard_size];
-        let mut xor_out: Vec<_> = xor_out_mem.chunks_exact_mut(shard_size).collect();
+        let last_count = data_shards % m;
+        let mut skew_lut2 = skew_lut;
 
-        let skew_lut = &lut::FFT_SKEW[m - 1..];
+        // goto skip_body
+        if m < data_shards {
+            // for sets of m data pieces
+            for _ in (m..data_shards - m).step_by(m) {
+                // work <- work xor IFFT(data + i, m, m + i)
+                skew_lut2 = &skew_lut2[m..];
+                ifft_dit_encoder(
+                    &shards_chunk[m..],
+                    m,
+                    &mut work_chunk[m..],
+                    Some(&mut xor_out_chunk),
+                    m,
+                    &skew_lut2[m..],
+                );
 
-        // ceil division
-        for offset in (0..shard_size).step_by(BLOCK_SIZE) {
-            let end = (offset + BLOCK_SIZE).min(shard_size);
-            let mut shards_chunk = shards
-                .iter_mut()
-                .map(|shard| &mut shard[offset..end])
-                .collect::<Vec<_>>();
-            let mut work_chunk = work
-                .iter_mut()
-                .map(|shard| &mut shard[offset..end])
-                .collect::<Vec<_>>();
-            let mut xor_out_chunk = xor_out
-                .iter_mut()
-                .map(|shard| &mut shard[offset..end])
-                .collect::<Vec<_>>();
-
-            // copy the input to the work table
-            for (shard, work) in shards_chunk[self.data_shards..]
-                .iter()
-                .zip(work_chunk.iter_mut())
-            {
-                work.copy_from_slice(shard);
-            }
-
-            ifft_dit_encoder(
-                &shards_chunk[..self.data_shards],
-                mtrunc,
-                &mut work_chunk,
-                None, // No xor output
-                m,
-                skew_lut,
-            );
-
-            // copy the work back to input
-            for (shard, work) in shards_chunk[self.data_shards..]
-                .iter_mut()
-                .zip(work_chunk.iter())
-            {
-                shard.copy_from_slice(work);
-            }
-
-            let last_count = self.data_shards % m;
-            let mut skew_lut2 = skew_lut;
-
-            // goto skip_body
-            if m < self.data_shards {
-                // for sets of m data pieces
-                for _ in (m..self.data_shards - m).step_by(m) {
-                    // work <- work xor IFFT(data + i, m, m + i)
-                    skew_lut2 = &skew_lut2[m..];
-                    ifft_dit_encoder(
-                        &shards_chunk[m..],
-                        m,
-                        &mut work_chunk[m..],
-                        Some(&mut xor_out_chunk),
-                        m,
-                        &skew_lut2[m..],
-                    );
-
-                    // copy the xor to work
-                    for (xor, work) in xor_out_chunk[..m].iter().zip(work_chunk.iter_mut()) {
-                        work.copy_from_slice(xor);
-                    }
-
-                    // copy the work to input
-                    for (shard, work) in shards_chunk[m..].iter_mut().zip(work_chunk[m..].iter()) {
-                        shard.copy_from_slice(work);
-                    }
+                // copy the xor to work
+                for (xor, work) in xor_out_chunk[..m].iter().zip(work_chunk.iter_mut()) {
+                    work.copy_from_slice(xor);
                 }
 
-                // Handle final partial set of m pieces:
-                if last_count != 0 {
-                    ifft_dit_encoder(
-                        &shards_chunk[m..],
-                        m,
-                        &mut work_chunk[m..],
-                        Some(&mut xor_out_chunk),
-                        m,
-                        &skew_lut2[m..],
-                    );
-
-                    // copy the xor to work
-                    for (xor, work) in xor_out_chunk[..m].iter().zip(work_chunk.iter_mut()) {
-                        work.copy_from_slice(xor);
-                    }
-
-                    // copy the work to input
-                    for (shard, work) in shards_chunk[m..].iter_mut().zip(work_chunk[m..].iter()) {
-                        shard.copy_from_slice(work);
-                    }
+                // copy the work to input
+                for (shard, work) in shards_chunk[m..].iter_mut().zip(work_chunk[m..].iter()) {
+                    shard.copy_from_slice(work);
                 }
             }
 
-            // work <- FFT(work, m, 0)
-            fft_dit(&mut work_chunk, self.parity_shards, m, &*lut::FFT_SKEW);
+            // Handle final partial set of m pieces:
+            if last_count != 0 {
+                ifft_dit_encoder(
+                    &shards_chunk[m..],
+                    m,
+                    &mut work_chunk[m..],
+                    Some(&mut xor_out_chunk),
+                    m,
+                    &skew_lut2[m..],
+                );
 
-            for (shard, work) in shards_chunk[self.data_shards..]
-                .iter_mut()
-                .zip(work_chunk.iter())
-            {
-                shard.copy_from_slice(work);
+                // copy the xor to work
+                for (xor, work) in xor_out_chunk[..m].iter().zip(work_chunk.iter_mut()) {
+                    work.copy_from_slice(xor);
+                }
+
+                // copy the work to input
+                for (shard, work) in shards_chunk[m..].iter_mut().zip(work_chunk[m..].iter()) {
+                    shard.copy_from_slice(work);
+                }
             }
         }
 
-        Ok(())
+        // work <- FFT(work, m, 0)
+        fft_dit(&mut work_chunk, parity_shards, m, &*lut::FFT_SKEW);
+
+        for (shard, work) in shards_chunk[data_shards..]
+            .iter_mut()
+            .zip(work_chunk.iter())
+        {
+            shard.copy_from_slice(work);
+        }
     }
 }
 
@@ -229,12 +195,14 @@ fn shard_size(shards: &[impl AsRef<[u8]>]) -> usize {
 // checkShards will check if shards are the same size
 // or 0, if allowed. An error is returned if this fails.
 // An error is also returned if all shards are size 0.
-fn check_shards(shards: &[impl AsRef<[u8]>], allow_zero: bool) -> Result<()> {
+//
+// returns the length of the single shard
+fn check_shards(shards: &[impl AsRef<[u8]>], allow_zero: bool) -> Result<usize> {
     let size = shard_size(shards);
 
     if size == 0 {
         if allow_zero {
-            return Ok(());
+            return Ok(0);
         } else {
             return Err(LeopardError::EmptyShards);
         }
@@ -247,7 +215,7 @@ fn check_shards(shards: &[impl AsRef<[u8]>], allow_zero: bool) -> Result<()> {
         return Err(LeopardError::UnequalShardsLengths);
     }
 
-    Ok(())
+    Ok(size)
 }
 
 // z = x + y (mod Modulus)
@@ -610,28 +578,24 @@ mod tests {
 
     #[test]
     fn test_encoding_small() {
-        let leo = LeopardFF8::new(1, 1).unwrap();
-
         let mut input = include!("../test_data/encode-ff8-1-64-input");
         let expected = include!("../test_data/encode-ff8-1-64-output");
 
         let mut input_ref: Vec<_> = input.iter_mut().map(|shard| shard.as_mut_slice()).collect();
 
-        leo.encode(&mut input_ref).unwrap();
+        encode(&mut input_ref, 1).unwrap();
 
         assert_eq!(input, expected);
     }
 
     #[test]
     fn test_encoding_big() {
-        let leo = LeopardFF8::new(100, 100).unwrap();
-
         let mut input = include!("../test_data/encode-ff8-100-128-input");
         let expected = include!("../test_data/encode-ff8-100-128-output");
 
         let mut input_ref: Vec<_> = input.iter_mut().map(|shard| shard.as_mut_slice()).collect();
 
-        leo.encode(&mut input_ref).unwrap();
+        encode(&mut input_ref, 100).unwrap();
 
         assert_eq!(input, expected);
     }
