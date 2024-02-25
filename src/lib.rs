@@ -1,5 +1,7 @@
 #![doc = include_str!("../README.md")]
 
+use std::ops::DerefMut;
+
 use bytes::{Buf, BufMut};
 use thiserror::Error;
 
@@ -45,6 +47,10 @@ pub enum LeopardError {
     /// Shard size is invalid.
     #[error("Shard size ({0}) should be a multiple of 64")]
     InvalidShardSize(usize),
+
+    /// To few shards to reconstruct data.
+    #[error("Too few shards ({0}) to reconstruct data, at least {1} needed")]
+    TooFewShards(usize, usize),
 }
 
 /// A result type with [`LeopardError`].
@@ -53,12 +59,12 @@ pub type Result<T, E = LeopardError> = std::result::Result<T, E>;
 /// Encode parity data into given shards.
 ///
 /// The first `data_shards` shards will be the treated as data shards
-/// and the rest as a parity shards.
+/// and the rest as parity shards.
 ///
 /// # Errors
 ///
 /// If too many shards provided or shards were of incorrect or different lengths.
-pub fn encode(shards: &mut [&mut [u8]], data_shards: usize) -> Result<()> {
+pub fn encode(shards: &mut [impl DerefMut<Target = [u8]>], data_shards: usize) -> Result<()> {
     if shards.len() > ORDER {
         return Err(LeopardError::MaxShardNumberExceeded(shards.len()));
     }
@@ -76,12 +82,14 @@ pub fn encode(shards: &mut [&mut [u8]], data_shards: usize) -> Result<()> {
         ));
     }
 
-    let shard_size = check_shards(shards, false)?;
+    let mut shards: Vec<&mut [u8]> = shards.iter_mut().map(|shard| shard.deref_mut()).collect();
+    let shard_size = check_shards(&shards, false)?;
+
     if shard_size % 64 != 0 {
         return Err(LeopardError::InvalidShardSize(shard_size));
     }
 
-    encode_inner(shards, data_shards, shard_size);
+    encode_inner(&mut shards, data_shards, shard_size);
 
     Ok(())
 }
@@ -171,6 +179,178 @@ fn is_encode_buf_overflow(data_shards: usize, parity_shards: usize) -> bool {
     (full_passes + 1) * m + 1 > MODULUS as usize
 }
 
+/// Reconstructs the original shards from the provided slice.
+///
+/// The shards which are missing should be provided as empty `Vec`s.
+///
+/// Reconstruction can only happen if the amount of not missing data and parity shards
+/// is equal or greater than the `data_shards`.
+///
+/// The first `data_shards` shards will be the treated as data shards
+/// and the rest as parity shards.
+///
+/// # Errors
+///
+/// If too few shards are present to reconstruct original data or shards were of incorrect or different lengths.
+pub fn reconstruct(shards: &mut [impl AsMut<Vec<u8>>], data_shards: usize) -> Result<()> {
+    if shards.len() > ORDER {
+        return Err(LeopardError::MaxShardNumberExceeded(shards.len()));
+    }
+    let parity_shards = shards.len() - data_shards;
+    if parity_shards > data_shards {
+        return Err(LeopardError::MaxParityShardNumberExceeded(
+            parity_shards,
+            data_shards,
+        ));
+    }
+
+    let mut shards: Vec<_> = shards.iter_mut().map(|shard| shard.as_mut()).collect();
+    let shard_size = check_shards(&shards, true)?;
+
+    let present_shards = shards.iter().filter(|shard| !shard.is_empty()).count();
+    if present_shards == shards.len() {
+        // all shards present, nothing to do
+        return Ok(());
+    }
+
+    // Check if we have enough to reconstruct.
+    if present_shards < data_shards {
+        return Err(LeopardError::TooFewShards(present_shards, data_shards));
+    }
+
+    if shard_size % 64 != 0 {
+        return Err(LeopardError::InvalidShardSize(shard_size));
+    }
+
+    reconstruct_inner(&mut shards, data_shards, shard_size);
+
+    Ok(())
+}
+
+fn reconstruct_inner(shards: &mut [&mut Vec<u8>], data_shards: usize, shard_size: usize) {
+    let parity_shards = shards.len() - data_shards;
+
+    // TODO: errorbitfields for avoiding unnecessary fft steps
+    // orig:
+    // Use only if we are missing less than 1/4 parity,
+    // And we are restoring a significant amount of data.
+    // useBits := r.totalShards-numberPresent <= r.parityShards/4 && shardSize*r.totalShards >= 64<<10
+
+    let m = ceil_pow2(parity_shards);
+    let n = ceil_pow2(m + data_shards);
+
+    // save the info which shards were empty
+    let empty_shards_mask: Vec<_> = shards.iter().map(|shard| shard.is_empty()).collect();
+    // and recreate them
+    for shard in shards.iter_mut().filter(|shard| shard.is_empty()) {
+        shard.resize(shard_size, 0);
+    }
+
+    let mut err_locs = [0u8; ORDER];
+
+    for (&is_empty, err_loc) in empty_shards_mask
+        .iter()
+        .skip(data_shards)
+        .zip(err_locs.iter_mut())
+    {
+        if is_empty {
+            *err_loc = 1;
+        }
+    }
+
+    for err in &mut err_locs[parity_shards..m] {
+        *err = 1;
+    }
+
+    for (&is_empty, err_loc) in empty_shards_mask
+        .iter()
+        .take(data_shards)
+        .zip(err_locs[m..].iter_mut())
+    {
+        if is_empty {
+            *err_loc = 1;
+        }
+    }
+
+    // TODO: No inversion...
+
+    // Evaluate error locator polynomial8
+    fwht(&mut err_locs, ORDER, m + data_shards);
+
+    for (err, &log_walsh) in err_locs.iter_mut().zip(lut::LOG_WALSH.iter()) {
+        let mul = (*err) as usize * log_walsh as usize;
+        *err = (mul % MODULUS as usize) as u8;
+    }
+
+    fwht(&mut err_locs, ORDER, ORDER);
+
+    let mut work_mem = vec![0u8; shard_size * n];
+    let mut work: Vec<_> = work_mem.chunks_exact_mut(shard_size).collect();
+
+    for i in 0..parity_shards {
+        if !empty_shards_mask[i + data_shards] {
+            mul_gf(work[i], shards[i + data_shards], err_locs[i]);
+        } else {
+            work[i].fill(0);
+        }
+    }
+    for work in work.iter_mut().take(m).skip(parity_shards) {
+        work.fill(0);
+    }
+
+    // work <- original data
+    for i in 0..data_shards {
+        if !empty_shards_mask[i] {
+            mul_gf(work[m + i], shards[i], err_locs[m + i])
+        } else {
+            work[m + i].fill(0);
+        }
+    }
+    for work in work.iter_mut().take(n).skip(m + data_shards) {
+        work.fill(0);
+    }
+
+    // work <- IFFT(work, n, 0)
+    ifft_dit_decoder(m + data_shards, &mut work, n, &lut::FFT_SKEW[..]);
+
+    // work <- FormalDerivative(work, n)
+    for i in 1..n {
+        let width = ((i ^ (i - 1)) + 1) >> 1;
+        let (output, input) = work.split_at_mut(i);
+        slices_xor(
+            &mut output[i - width..],
+            input.iter_mut().map(|elem| &**elem),
+        );
+    }
+
+    // work <- FFT(work, n, 0) truncated to m + dataShards
+    fft_dit(&mut work, m + data_shards, n, &lut::FFT_SKEW[..]);
+
+    // Reveal erasures
+    //
+    //  Original = -ErrLocator * FFT( Derivative( IFFT( ErrLocator * ReceivedData ) ) )
+    //  mul_mem(x, y, log_m, ) equals x[] = y[] * log_m
+    //
+    // mem layout: [Recovery Data (Power of Two = M)] [Original Data (K)] [Zero Padding out to N]
+    for (i, shard) in shards.iter_mut().enumerate() {
+        if !empty_shards_mask[i] {
+            continue;
+        }
+
+        if i >= data_shards {
+            // parity shard
+            mul_gf(
+                shard,
+                work[i - data_shards],
+                MODULUS - err_locs[i - data_shards],
+            );
+        } else {
+            // data shard
+            mul_gf(shard, work[i + m], MODULUS - err_locs[i + m]);
+        }
+    }
+}
+
 fn shard_size(shards: &[impl AsRef<[u8]>]) -> usize {
     shards
         .iter()
@@ -196,7 +376,14 @@ fn check_shards(shards: &[impl AsRef<[u8]>], allow_zero: bool) -> Result<usize> 
     }
 
     // NOTE: for happy case fold would be faster
-    let are_all_same_size = shards.iter().all(|shard| shard.as_ref().len() == size);
+    let are_all_same_size = shards.iter().all(|shard| {
+        let shard = shard.as_ref();
+        if allow_zero && shard.is_empty() {
+            true
+        } else {
+            shard.len() == size
+        }
+    });
 
     if !are_all_same_size {
         return Err(LeopardError::UnequalShardsLengths);
@@ -245,6 +432,13 @@ fn mul_add(x: &mut [u8], y: &[u8], log_m: u8) {
     x.iter_mut().zip(y.iter()).for_each(|(x, y)| {
         *x ^= lut::mul(*y, log_m);
     })
+}
+
+fn mul_gf(out: &mut [u8], input: &[u8], log_m: u8) {
+    let mul_lut = lut::MUL[log_m as usize];
+    for (out, &input) in out.iter_mut().zip(input.iter()) {
+        *out = mul_lut[input as usize];
+    }
 }
 
 // Decimation in time (DIT) Fast Walsh-Hadamard Transform
@@ -391,6 +585,49 @@ fn ifft_dit_encoder(
             &mut xor_output[..m],
             work[..m].iter_mut().map(|elem| &**elem),
         );
+    }
+}
+
+// Basic no-frills version for decoder
+fn ifft_dit_decoder(mtrunc: usize, work: &mut [&mut [u8]], m: usize, skew_lut: &[u8]) {
+    // Decimation in time: Unroll 2 layers at a time
+    let mut dist = 1;
+    let mut dist4 = 4;
+
+    while dist4 <= m {
+        // For each set of dist*4 elements:
+        for r in (0..mtrunc).step_by(dist4) {
+            let iend = r + dist;
+            let log_m01 = skew_lut[iend - 1];
+            let log_m02 = skew_lut[iend + dist - 1];
+            let log_m23 = skew_lut[iend + 2 * dist - 1];
+
+            // For each set of dist elements:
+            for i in r..iend {
+                ifft_dit4(&mut work[i..], dist, log_m01, log_m23, log_m02);
+            }
+        }
+
+        dist = dist4;
+        dist4 <<= 2;
+    }
+
+    // If there is one layer left:
+    if dist < m {
+        // Assuming that dist = m / 2
+        debug_assert_eq!(2 * dist, m);
+
+        let log_m = skew_lut[dist - 1];
+
+        if log_m == MODULUS {
+            let (input, output) = work.split_at_mut(dist);
+            slices_xor(&mut output[..dist], input.iter_mut().map(|elem| &**elem));
+        } else {
+            let (x, y) = work.split_at_mut(dist);
+            for i in 0..dist {
+                ifft_dit2(x[i], y[i], log_m)
+            }
+        }
     }
 }
 
@@ -553,12 +790,13 @@ fn slice_xor(mut input: impl Buf, mut output: &mut [u8]) {
 mod tests {
     use std::panic::catch_unwind;
 
-    use rand::Fill;
+    use proptest::test_runner::Config;
+    use rand::{seq::index, Fill, Rng};
     use test_strategy::{proptest, Arbitrary};
 
     use super::*;
 
-    #[proptest]
+    #[proptest(Config::with_cases(64))]
     fn go_reedsolomon_encode_compatibility(input: TestCase) {
         let TestCase {
             data_shards,
@@ -569,21 +807,41 @@ mod tests {
         let test_shards = random_shards(total_shards, shard_size);
 
         let mut shards = test_shards.clone();
-        let mut shards_ref: Vec<_> = shards
-            .iter_mut()
-            .map(|shard| shard.as_mut_slice())
-            .collect();
-        encode(&mut shards_ref, data_shards).unwrap();
+        encode(&mut shards, data_shards).unwrap();
 
         let mut expected = test_shards;
-        let mut expected_ref: Vec<_> = expected
-            .iter_mut()
-            .map(|shard| shard.as_mut_slice())
-            .collect();
-        go_leopard::encode(&mut expected_ref, data_shards, shard_size).unwrap();
+        go_leopard::encode(&mut expected, data_shards, shard_size).unwrap();
 
         if expected != shards {
             panic!("Go and Rust encoding differ for {input:#?}")
+        }
+    }
+
+    #[proptest(Config::with_cases(32))]
+    fn encode_reconstruct(input: TestCase) {
+        let TestCase {
+            data_shards,
+            parity_shards,
+            shard_size,
+        } = input;
+        let total_shards = data_shards + parity_shards;
+        let mut shards = random_shards(total_shards, shard_size);
+
+        encode(&mut shards, data_shards).unwrap();
+
+        let expected = shards.clone();
+
+        let mut rng = rand::thread_rng();
+        let missing_shards = rng.gen_range(1..=parity_shards);
+        for idx in index::sample(&mut rng, total_shards, missing_shards) {
+            println!("missing: {idx}");
+            shards[idx] = vec![];
+        }
+
+        reconstruct(&mut shards, data_shards).unwrap();
+
+        if expected[..data_shards] != shards[..data_shards] {
+            panic!("failed");
         }
     }
 
