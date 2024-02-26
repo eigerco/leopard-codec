@@ -790,13 +790,12 @@ fn slice_xor(mut input: impl Buf, mut output: &mut [u8]) {
 mod tests {
     use std::panic::catch_unwind;
 
-    use proptest::test_runner::Config;
     use rand::{seq::index, Fill, Rng};
     use test_strategy::{proptest, Arbitrary};
 
     use super::*;
 
-    #[proptest(Config::with_cases(64))]
+    #[proptest]
     fn go_reedsolomon_encode_compatibility(input: TestCase) {
         let TestCase {
             data_shards,
@@ -817,7 +816,7 @@ mod tests {
         }
     }
 
-    #[proptest(Config::with_cases(32))]
+    #[proptest]
     fn encode_reconstruct(input: TestCase) {
         let TestCase {
             data_shards,
@@ -834,14 +833,13 @@ mod tests {
         let mut rng = rand::thread_rng();
         let missing_shards = rng.gen_range(1..=parity_shards);
         for idx in index::sample(&mut rng, total_shards, missing_shards) {
-            println!("missing: {idx}");
             shards[idx] = vec![];
         }
 
         reconstruct(&mut shards, data_shards).unwrap();
 
-        if expected[..data_shards] != shards[..data_shards] {
-            panic!("failed");
+        if expected != shards {
+            panic!("shares differ after reconstruction");
         }
     }
 

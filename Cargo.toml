@@ -17,8 +17,5 @@ test-strategy = "0.3"
 [workspace]
 members = ["go-leopard"]
 
-[profile.test.package.proptest]
-opt-level = 3
-
-[profile.test.package.rand_chacha]
+[profile.test]
 opt-level = 3
