@@ -12,6 +12,11 @@ jobs:
     steps:
     - uses: actions/checkout@v1
 
+    - name: Install Go
+      uses: actions/setup-go@v4
+      with:
+        go-version: '1.22.x'
+
     - name: Install wasm Rust
       uses: actions-rs/toolchain@v1
       with:
@@ -31,6 +36,11 @@ jobs:
     steps:
     - uses: actions/checkout@v1
 
+    - name: Install Go
+      uses: actions/setup-go@v4
+      with:
+        go-version: '1.22.x'
+
     - name: Run rustdoc check
       env:
         RUSTDOCFLAGS: -D warnings
@@ -49,6 +59,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v1
+
+    - name: Install Go
+      uses: actions/setup-go@v4
+      with:
+        go-version: '1.22.x'
 
     - name: Set up cargo cache
       uses: actions/cache@v3
@@ -74,6 +89,11 @@ jobs:
     steps:
     - name: Checkout sources
       uses: actions/checkout@v3
+
+    - name: Install Go
+      uses: actions/setup-go@v4
+      with:
+        go-version: '1.22.x'
 
     - name: Install toolchain
       uses: dtolnay/rust-toolchain@nightly
