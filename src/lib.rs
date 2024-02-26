@@ -31,7 +31,7 @@ pub enum LeopardError {
     /// This amount of (data, parity) shards is not supported by Leopard algorithm
     /// and would result in buffer overflow on skew lookup table during encoding.
     /// Please try using different amounts of shards.
-    #[error("Unsupported amount of data ({0}) and parity ({1}) shards")]
+    #[error("Unsupported number of data ({0}) and parity ({1}) shards")]
     UnsupportedShardsAmounts(usize, usize),
 
     /// Some shards contain no data.
