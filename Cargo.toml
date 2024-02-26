@@ -9,4 +9,16 @@ lazy_static = "1.4"
 thiserror = "1"
 
 [dev-dependencies]
-serde_json = "1"
+go-leopard = { path = "go-leopard" }
+proptest = "1.4.0"
+rand = "0.8"
+test-strategy = "0.3"
+
+[workspace]
+members = ["go-leopard"]
+
+[profile.test.package.proptest]
+opt-level = 3
+
+[profile.test.package.rand_chacha]
+opt-level = 3

@@ -23,7 +23,7 @@ jobs:
       run: cargo clippy --all --all-targets -- -D warnings -D missing-docs
 
     - name: Run clippy for wasm32
-      run: cargo clippy --all --all-targets --target=wasm32-unknown-unknown -- -D warnings -D missing-docs
+      run: cargo clippy --target=wasm32-unknown-unknown -- -D warnings -D missing-docs
 
 
   docs:
