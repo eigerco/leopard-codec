@@ -179,11 +179,11 @@ fn is_encode_buf_overflow(data_shards: usize, parity_shards: usize) -> bool {
     (full_passes + 1) * m + 1 > MODULUS as usize
 }
 
-/// Reconstructs the original shards from the provided slice.
+/// Reconstructs original shards from the provided slice.
 ///
 /// The shards which are missing should be provided as empty `Vec`s.
 ///
-/// Reconstruction can only happen if the amount of not missing data and parity shards
+/// Reconstruction can only happen if the amount of present data and parity shards
 /// is equal or greater than the `data_shards`.
 ///
 /// The first `data_shards` shards will be the treated as data shards
