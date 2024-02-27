@@ -1,6 +1,6 @@
 module github.com/eigerco/leopard-codec
 
-go 1.23
+go 1.22.0
 
 require (
 	github.com/klauspost/cpuid/v2 v2.2.6 // indirect

@@ -20,6 +20,6 @@ The 8-bit implementation should be used with up to 256 total shards and 16-bit w
 shards are needed.
 
 - [x] Encoding parity shards using 8-bit leopard algorithm
-- [ ] Reconstructing shards using 8-bit leopard algorithm
+- [x] Reconstructing shards using 8-bit leopard algorithm
 - [ ] Encoding parity shards using 16-bit leopard algorithm
 - [ ] Reconstructing shards using 16-bit leopard algorithm

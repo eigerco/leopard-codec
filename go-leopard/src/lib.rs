@@ -1,6 +1,6 @@
 //! Rust wrapper over Go's reedsolomon module
 
-use std::ffi::c_uchar;
+use std::{ffi::c_uchar, ops::DerefMut};
 
 use thiserror::Error;
 
@@ -26,7 +26,7 @@ pub enum Error {
 
 /// Encode the shards using the Go's reedsolomon module
 pub fn encode(
-    shards: &mut [&mut [u8]],
+    shards: &mut [impl DerefMut<Target = [u8]>],
     data_shards: usize,
     shard_size: usize,
 ) -> Result<(), Error> {
