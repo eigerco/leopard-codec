@@ -1,7 +1,5 @@
 #![doc = include_str!("../README.md")]
 
-use std::ops::DerefMut;
-
 use bytes::{Buf, BufMut};
 use thiserror::Error;
 
@@ -64,7 +62,7 @@ pub type Result<T, E = LeopardError> = std::result::Result<T, E>;
 /// # Errors
 ///
 /// If too many shards provided or shards were of incorrect or different lengths.
-pub fn encode(shards: &mut [impl DerefMut<Target = [u8]>], data_shards: usize) -> Result<()> {
+pub fn encode(shards: &mut [impl AsMut<[u8]>], data_shards: usize) -> Result<()> {
     if shards.len() > ORDER {
         return Err(LeopardError::MaxShardNumberExceeded(shards.len()));
     }
@@ -82,7 +80,7 @@ pub fn encode(shards: &mut [impl DerefMut<Target = [u8]>], data_shards: usize) -
         ));
     }
 
-    let mut shards: Vec<&mut [u8]> = shards.iter_mut().map(|shard| shard.deref_mut()).collect();
+    let mut shards: Vec<&mut [u8]> = shards.iter_mut().map(|shard| shard.as_mut()).collect();
     let shard_size = check_shards(&shards, false)?;
 
     if shard_size % 64 != 0 {
