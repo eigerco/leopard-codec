@@ -23,3 +23,18 @@ shards are needed.
 - [x] Reconstructing shards using 8-bit leopard algorithm
 - [ ] Encoding parity shards using 16-bit leopard algorithm
 - [ ] Reconstructing shards using 16-bit leopard algorithm
+
+## Contributing
+
+We welcome contributions! Please fork the repository and submit a pull request.
+
+## License
+
+Leopard codec is licensed under the Apache 2.0 License. See the [LICENSE](./LICENSE) file for more details.
+
+## About [Eiger](https://www.eiger.co)
+
+We are engineers. We contribute to various ecosystems by building low level implementations and core components.
+
+Contact us at hello@eiger.co
+Follow us on [X/Twitter](https://x.com/eiger_co)
