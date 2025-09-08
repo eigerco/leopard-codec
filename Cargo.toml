@@ -8,21 +8,21 @@ license = "Apache-2.0"
 homepage = "https://www.eiger.co"
 repository = "https://github.com/eigerco/leopard-codec"
 readme = "README.md"
+rust-version = "1.80"
 # crates.io is limited to 5 keywords and 5 categories
 keywords = ["reed-solomon", "erasure", "leopard"]
 # Must be one of <https://crates.io/category_slugs>
 categories = ["encoding"]
 
 [dependencies]
-bytes = "1.5"
-lazy_static = "1.4"
-thiserror = "1"
+bytes = "1"
+thiserror = "2"
 
 [dev-dependencies]
 go-leopard = { path = "go-leopard" }
-proptest = "1.4.0"
-rand = "0.8"
-test-strategy = "0.3"
+proptest = "1"
+rand = "0.9"
+test-strategy = "0.4"
 
 [workspace]
 members = ["go-leopard"]

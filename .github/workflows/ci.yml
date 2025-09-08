@@ -10,31 +10,36 @@ jobs:
   clippy:
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v1
+    - uses: actions/checkout@v4
+
+    - name: Setup toolchain
+      uses: actions-rust-lang/setup-rust-toolchain@v1
+      with:
+        components: clippy
+        target: wasm32-unknown-unknown
+        rustflags: -D warnings -D missing-docs
 
     - name: Install Go
       uses: actions/setup-go@v4
       with:
         go-version: '1.22.x'
 
-    - name: Install wasm Rust
-      uses: actions-rs/toolchain@v1
-      with:
-        toolchain: stable
-        components: clippy
-        target: wasm32-unknown-unknown
-
     - name: Run clippy for native
-      run: cargo clippy --all --all-targets -- -D warnings -D missing-docs
+      run: cargo clippy --all-features --all-targets
 
     - name: Run clippy for wasm32
-      run: cargo clippy --target=wasm32-unknown-unknown -- -D warnings -D missing-docs
+      run: cargo clippy --all-features --all-targets --target wasm32-unknown-unknown
 
 
   docs:
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v1
+    - uses: actions/checkout@v4
+
+    - name: Setup toolchain
+      uses: actions-rust-lang/setup-rust-toolchain@v1
+      with:
+        rustflags: -D missing-docs
 
     - name: Install Go
       uses: actions/setup-go@v4
@@ -50,7 +55,13 @@ jobs:
   fmt:
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v1
+    - uses: actions/checkout@v4
+
+    - name: Setup toolchain
+      uses: actions-rust-lang/setup-rust-toolchain@v1
+      with:
+        components: rustfmt
+
     - name: Run fmt
       run: cargo fmt -- --check
 
@@ -58,29 +69,18 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v1
+    - uses: actions/checkout@v4
+
+    - name: Setup toolchain
+      uses: actions-rust-lang/setup-rust-toolchain@v1
 
     - name: Install Go
       uses: actions/setup-go@v4
       with:
         go-version: '1.22.x'
 
-    - name: Set up cargo cache
-      uses: actions/cache@v3
-      with:
-        path: |
-          ~/.cargo/bin/
-          ~/.cargo/registry/index/
-          ~/.cargo/registry/cache/
-          ~/.cargo/git/db/
-          target/
-        key: cargo-${{ hashFiles('**/Cargo.lock') }}
-        restore-keys:
-          cargo-${{ hashFiles('**/Cargo.lock') }}
-          cargo-
-
     - name: Run tests
-      run: cargo test
+      run: cargo test --all-features
 
 
   unused-deps:
@@ -88,20 +88,77 @@ jobs:
     name: unused dependencies
     steps:
     - name: Checkout sources
-      uses: actions/checkout@v3
+      uses: actions/checkout@v4
+
+    - name: Setup toolchain
+      uses: actions-rust-lang/setup-rust-toolchain@v1
+      with:
+        toolchain: nightly
+
+    - name: Install cargo-udeps
+      uses: taiki-e/install-action@v2
+      with:
+        tool: cargo-udeps
 
     - name: Install Go
       uses: actions/setup-go@v4
       with:
         go-version: '1.22.x'
 
-    - name: Install toolchain
-      uses: dtolnay/rust-toolchain@nightly
-
-    - name: Install cargo-udeps
-      uses: taiki-e/cache-cargo-install-action@v1
-      with:
-        tool: cargo-udeps@0.1
-
     - name: Check for unused dependencies
       run: cargo +nightly udeps --all-features --all-targets
+
+
+  minimal-versions:
+    runs-on: ubuntu-latest
+    name: minimal versions of dependencies
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Setup toolchain
+      uses: actions-rust-lang/setup-rust-toolchain@v1
+
+    - name: Install cargo-minimal-versions
+      uses: taiki-e/install-action@v2
+      with:
+        tool: cargo-hack,cargo-minimal-versions
+
+    - name: Check minimal versions
+      run: cargo minimal-versions check --direct --all-features
+
+
+  msrv:
+    runs-on: ubuntu-latest
+    name: minimum supported rust version
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Setup toolchain
+      uses: actions-rust-lang/setup-rust-toolchain@v1
+
+    - name: Install cargo-minimal-versions
+      uses: taiki-e/install-action@v2
+      with:
+        tool: cargo-msrv
+
+    - name: Check MSRV
+      run: cargo msrv verify --all-features
+
+
+  required:
+    runs-on: ubuntu-latest
+    name: Required checks
+    if: ${{ !cancelled() }}
+    needs:
+    - clippy
+    - docs
+    - fmt
+    - test
+    - unused-deps
+    - minimal-versions
+    - msrv
+
+    steps:
+    - name: On failure
+      if: always() && contains(needs.*.result, 'failure')
+      run: exit 1

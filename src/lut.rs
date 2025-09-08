@@ -1,16 +1,13 @@
 use std::array;
-
-use lazy_static::lazy_static;
+use std::sync::LazyLock;
 
 use crate::{add_mod, fwht, mul_log, BITS, MODULUS, ORDER};
 
 include!(concat!(env!("OUT_DIR"), "/table.rs"));
 
 // TODO: generate those in build.rs too
-lazy_static! {
-    pub static ref FFT_SKEW: [u8; MODULUS as usize] = init_fft_skew_table();
-    pub static ref LOG_WALSH: [u8; ORDER] = init_log_walsh_table();
-}
+pub static FFT_SKEW: LazyLock<[u8; MODULUS as usize]> = LazyLock::new(init_fft_skew_table);
+pub static LOG_WALSH: LazyLock<[u8; ORDER]> = LazyLock::new(init_log_walsh_table);
 
 #[inline]
 pub fn log(x: u8) -> u8 {
