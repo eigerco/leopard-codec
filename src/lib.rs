@@ -21,7 +21,7 @@ mod lut;
 #[derive(Debug, Error)]
 pub enum LeopardError {
     /// Maximum number of shards exceeded.
-    #[error("Maximum shard number ({}) exceeded: {0}", ORDER)]
+    #[error("Maximum shard number ({order}) exceeded: {0}", order=ORDER)]
     MaxShardNumberExceeded(usize),
 
     /// Maximum number of parity shards exceeded.
@@ -828,8 +828,8 @@ mod tests {
 
         let expected = shards.clone();
 
-        let mut rng = rand::thread_rng();
-        let missing_shards = rng.gen_range(1..=parity_shards);
+        let mut rng = rand::rng();
+        let missing_shards = rng.random_range(1..=parity_shards);
         for idx in index::sample(&mut rng, total_shards, missing_shards) {
             shards[idx] = vec![];
         }
@@ -883,11 +883,11 @@ mod tests {
     }
 
     fn random_shards(shards: usize, shard_size: usize) -> Vec<Vec<u8>> {
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         (0..shards)
             .map(|_| {
                 let mut shard = vec![0; shard_size];
-                shard.try_fill(&mut rng).unwrap();
+                Fill::fill(shard.as_mut_slice(), &mut rng);
                 shard
             })
             .collect()
