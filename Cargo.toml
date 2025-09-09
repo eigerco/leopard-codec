@@ -1,6 +1,6 @@
 [package]
 name = "leopard-codec"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 authors = ["Eiger <hello@eiger.co>"]
 description = "Implementation of Reed-Solomon codes using leopard algorithm"
